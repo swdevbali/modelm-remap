@@ -162,6 +162,14 @@ MODIFIERS = {
     "ROPT": "RALT", "ROPTION": "RALT", "RALT": "RALT",
 }
 
+# How modifier tokens are shown when listing configured macros.
+META_DISPLAY = {
+    "LGUI": "Cmd", "RGUI": "RCmd", "LSHIFT": "Shift", "RSHIFT": "RShift",
+    "LALT": "Opt", "RALT": "ROpt", "LCTRL": "Ctrl", "RCTRL": "RCtrl",
+    # either-side tokens the converter may store
+    "GUI": "Cmd", "SHIFT": "Shift", "ALT": "Opt", "CTRL": "Ctrl",
+}
+
 # Named shortcuts (macros) the tool can write. A shortcut is a chord of
 # modifiers plus one ordinary key; the converter synthesises it from one press.
 SHORTCUTS = {
@@ -583,6 +591,63 @@ def label(name):
     return LABELS.get(name, name)
 
 
+def parse_configured(sc_text):
+    """Parse a disassembled config into (remaps, macros).
+
+    remaps: list of (src, dst) token pairs.
+    macros: list of {"trigger": KEY, "metas": [META...], "target": KEY|None}.
+    """
+    remaps, macros = [], []
+    section = None
+    cur = None
+    for raw in sc_text.splitlines():
+        line = raw.strip()
+        if not line or line.startswith("#"):
+            continue
+        low = line.lower()
+        if low == "remapblock":
+            section = "remap"
+        elif low == "macroblock":
+            section = "macro"
+        elif low == "endblock":
+            if cur is not None:
+                macros.append(cur)
+                cur = None
+            section = None
+        elif section == "remap":
+            toks = line.split()
+            if len(toks) >= 2 and toks[0].lower() != "layer":
+                remaps.append((toks[0].upper(), toks[1].upper()))
+        elif section == "macro":
+            if low.startswith("macro "):
+                toks = line.split()
+                cur = {"trigger": toks[1].upper() if len(toks) > 1 else "?",
+                       "metas": [], "target": None}
+            elif low == "endmacro":
+                if cur is not None:
+                    macros.append(cur)
+                    cur = None
+            elif cur is not None:
+                toks = line.split("#")[0].split()
+                if not toks:
+                    continue
+                if toks[0] == "PUSH_META" and "ASSIGN_META" in toks:
+                    cur["metas"] = [t.upper() for t in toks[toks.index("ASSIGN_META") + 1:]]
+                elif toks[0] == "PRESS" and len(toks) > 1:
+                    cur["target"] = toks[1].upper()
+    if cur is not None:
+        macros.append(cur)
+    return remaps, macros
+
+
+def chord_display(metas, target):
+    if target is None:
+        return "custom macro"
+    parts = [META_DISPLAY.get(m, m) for m in metas]
+    parts.append(label(target))
+    return " + ".join(parts)
+
+
 META_TOKENS = set(MODIFIERS.values()) | {"CTRL", "SHIFT", "ALT", "GUI", "ALL"}
 
 
@@ -841,6 +906,54 @@ def cmd_show(args):
     print("  " + "-" * 40)
 
 
+def cmd_ls(args):
+    as_json = getattr(args, "json", False)
+    info = device_info()
+    scb = read_device_config()
+    if scb is None:
+        if as_json:
+            print('{"remaps": [], "macros": []}')
+        else:
+            banner(info)
+            print("\n  (converter has no config yet)")
+        return
+    remaps, macros = parse_configured(disassemble(scb))
+
+    if as_json:
+        import json
+        print(json.dumps({
+            "remaps": [{"key": s, "to": d} for s, d in remaps],
+            "macros": [{"key": m["trigger"], "metas": m["metas"], "target": m["target"],
+                        "chord": chord_display(m["metas"], m["target"])} for m in macros],
+        }, indent=2))
+        return
+
+    banner(info)
+    if not remaps and not macros:
+        print("\n  no keys configured yet.")
+        return
+
+    if remaps:
+        print("\n  Remapped keys (%d)" % len(remaps))
+        print("  " + "-" * 54)
+        for src, dst in remaps:
+            if src == dst:
+                note = "no-op"
+            elif dst == "UNASSIGNED":
+                note = "disabled"
+            else:
+                note = LABELS.get(dst, "")
+            print("    %-16s ->  %-16s %s" % (src, dst, note))
+    if macros:
+        print("\n  Shortcut keys (%d)" % len(macros))
+        print("  " + "-" * 54)
+        for m in macros:
+            print("    %-16s ->  %s" % (m["trigger"], chord_display(m["metas"], m["target"])))
+
+    keys = {s for s, _ in remaps} | {m["trigger"] for m in macros}
+    print("\n  %d configured key(s)." % len(keys))
+
+
 def cmd_info(args):
     out = run([tool("sctool"), "info"], check=False)
     print(out.rstrip())
@@ -961,6 +1074,11 @@ def build_parser():
 
     sh = sub.add_parser("show", help="show the config stored in the converter")
     sh.set_defaults(func=cmd_show)
+
+    ls = sub.add_parser("ls", aliases=["list"],
+                        help="list the keys already configured in the converter")
+    ls.add_argument("--json", action="store_true", help="machine-readable output")
+    ls.set_defaults(func=cmd_ls)
 
     i = sub.add_parser("info", help="show firmware / EEPROM info")
     i.set_defaults(func=cmd_info)

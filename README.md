@@ -58,7 +58,9 @@ modelm-remap macro                    # press a key -> choose a shortcut to send
 modelm-remap shortcut F10 CMD+SHIFT+4 # non-interactive shortcut macro
 modelm-remap shortcuts                # list the named shortcuts
 modelm-remap listen                   # print keys as you press them
-modelm-remap show                     # config currently stored in the converter
+modelm-remap ls                       # list the keys already configured
+modelm-remap ls --json                # ... machine-readable
+modelm-remap show                     # raw config currently stored in the converter
 modelm-remap keys CMD                 # list/search valid key names
 modelm-remap info                     # firmware + EEPROM info
 modelm-remap read backup.scb          # save the whole config
